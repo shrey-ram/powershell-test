@@ -1,29 +1,57 @@
-# Azure Storage Account Details
+# Azure Storage Account Details - Replicating azcopy recursive copy
 $sourceAccountName = "sourceaccountname"
 $sourceContainerName = "source-container"
-$sourceFolderPath = "path/to/source/folder"  # Don't include leading slash
+$sourceFolderPath = "templates"  # The folder to copy from
 $sourceSASToken = "?sv=2022-11-02&ss=b&srt=sco&sp=r&se=2024-12-31T23:59:59Z&..."  # Your source SAS token
 
 $destAccountName = "destaccountname"
 $destContainerName = "dest-container"
-$destFolderPath = "path/to/dest/folder"  # Don't include leading slash
+# For azcopy-like behavior, we copy the entire folder structure as-is
 $destSASToken = "?sv=2022-11-02&ss=b&srt=sco&sp=rwdlacup&se=2024-12-31T23:59:59Z&..."  # Your dest SAS token
 
 # Build storage URLs
 $sourceBaseUrl = "https://$sourceAccountName.blob.core.windows.net/$sourceContainerName"
 $destBaseUrl = "https://$destAccountName.blob.core.windows.net/$destContainerName"
 
-Write-Host "Starting blob copy from $sourceContainerName/$sourceFolderPath to $destContainerName/$destFolderPath" -ForegroundColor Yellow
+Write-Host "Starting recursive copy from $sourceContainerName/$sourceFolderPath to $destContainerName (preserving folder structure)" -ForegroundColor Yellow
 
-# List blobs using REST API
+# List blobs using REST API - recursive copy like azcopy
+# First try with trailing slash (most common), then without
 $listUrl = "$sourceBaseUrl$sourceSASToken&restype=container&comp=list&prefix=$sourceFolderPath/"
+
+Write-Host "Listing all blobs in '$sourceFolderPath' folder recursively..." -ForegroundColor Gray
+Write-Host "URL pattern: $sourceBaseUrl/[SAS]&restype=container&comp=list&prefix=$sourceFolderPath/" -ForegroundColor Gray
 
 try {
     $response = Invoke-RestMethod -Uri $listUrl -Method GET
     $blobs = $response.EnumerationResults.Blobs.Blob
     
+    # If no blobs found with trailing slash, try without (handles edge cases)
     if (!$blobs) {
-        Write-Host "No blobs found in source folder!" -ForegroundColor Red
+        Write-Host "No blobs found with trailing slash, trying without..." -ForegroundColor Yellow
+        $listUrl = "$sourceBaseUrl$sourceSASToken&restype=container&comp=list&prefix=$sourceFolderPath"
+        $response = Invoke-RestMethod -Uri $listUrl -Method GET
+        $blobs = $response.EnumerationResults.Blobs.Blob
+    }
+    
+    # Also try listing everything if still no results (debug mode)
+    if (!$blobs) {
+        Write-Host "Still no results, trying to list all blobs to debug..." -ForegroundColor Yellow
+        $debugUrl = "$sourceBaseUrl$sourceSASToken&restype=container&comp=list"
+        $debugResponse = Invoke-RestMethod -Uri $debugUrl -Method GET
+        $allBlobs = $debugResponse.EnumerationResults.Blobs.Blob
+        if ($allBlobs) {
+            Write-Host "Found $($allBlobs.Count) total blobs in container. First few:" -ForegroundColor Yellow
+            $allBlobs | Select-Object -First 5 | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor Gray }
+        }
+    }
+    
+    if (!$blobs) {
+        Write-Host "No blobs found in source folder '$sourceFolderPath'!" -ForegroundColor Red
+        Write-Host "Please verify:" -ForegroundColor Yellow
+        Write-Host "  1. The folder name is correct (case-sensitive)" -ForegroundColor Yellow
+        Write-Host "  2. The SAS token has List permission" -ForegroundColor Yellow
+        Write-Host "  3. There are actually files in the folder" -ForegroundColor Yellow
         exit 1
     }
     
@@ -41,9 +69,9 @@ try {
     foreach ($blob in $blobs) {
         $blobName = $blob.Name
         
-        # Calculate destination blob name (preserving folder structure)
-        $relativePath = $blobName.Substring($sourceFolderPath.Length)
-        $destBlobName = "$destFolderPath$relativePath"
+        # For azcopy-like behavior, preserve the full path including the templates folder
+        # This replicates: azcopy copy "source/templates" "dest" --recursive
+        $destBlobName = $blobName  # Keep the full path as-is
         
         Write-Host "Copying: $blobName -> $destBlobName" -ForegroundColor Cyan
         
